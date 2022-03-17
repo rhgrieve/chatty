@@ -2,13 +2,22 @@ import { getRandomColor } from "./helpers.ts";
 
 const server = Deno.listen({ hostname: "0.0.0.0", port: 8080 });
 
-interface ChatUser {
-  id: number;
+class ChatUser {
+  uuid: string;
+  username: string;
+  color: string;
   conn: WebSocket;
+
+  constructor(uuid: string, username: string, conn: WebSocket) {
+    this.uuid = uuid;
+    this.username = username;
+    this.conn = conn;
+    this.color = getRandomColor();
+  }
 }
 
 type ConnPool = {
-  [key: string]: WebSocket;
+  [key: string]: ChatUser;
 };
 const connectionPool: ConnPool = {};
 
@@ -30,14 +39,20 @@ function handleReq(req: Request): Response {
   };
   socket.onmessage = (e) => {
     console.log("socket message:", e.data);
-    const { id, message, datetime } = JSON.parse(e.data);
-    connectionPool[id] = socket;
+    const { id, message, username, datetime } = JSON.parse(e.data);
+    const userExists = connectionPool[id];
+    if (!userExists) {
+      connectionPool[id] = new ChatUser(id, username, socket);
+    }
     Object.keys(connectionPool).forEach((id) => {
-      connectionPool[id].send(
+      const user = connectionPool[id];
+      user.conn.send(
         JSON.stringify({
           datetime,
+          username,
           id,
           message,
+          color: user.color,
         }),
       );
     });
