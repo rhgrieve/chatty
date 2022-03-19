@@ -14,6 +14,16 @@ class ChatUser {
     this.conn = conn;
     this.color = getRandomColor();
   }
+
+  broadcast(message: string) {
+    this.conn.readyState === 1 && this.conn.send(JSON.stringify({
+      message,
+      datetime: new Date().toLocaleTimeString(),
+      id: this.uuid,
+      username: this.username,
+      color: this.color,
+    }));
+  }
 }
 
 class ConnPool {
@@ -45,10 +55,27 @@ class ConnPool {
 
 const connectionPool = new ConnPool();
 
+function broadcastMessage(
+  user: ChatUser,
+  datetime: string,
+  username: string,
+  id: string,
+  message: string,
+  color: string,
+) {
+  user.conn.readyState === 1 && user.conn.send(JSON.stringify({
+    datetime,
+    username,
+    id,
+    message,
+    color,
+  }));
+}
+
 function onMessage(this: WebSocket, e: MessageEvent<any>): any {
   console.log("socket message:", e.data);
 
-  const { id, message, username, datetime } = JSON.parse(e.data);
+  const { id, message, username, statusMessage } = JSON.parse(e.data);
   let sendingUser = connectionPool.getConnectionByID(id);
   if (!sendingUser) {
     sendingUser = connectionPool.addConnection(
@@ -56,15 +83,19 @@ function onMessage(this: WebSocket, e: MessageEvent<any>): any {
     );
   }
 
-  connectionPool.getAllConnections().forEach((user) => {
-    user.conn.readyState === 1 && user.conn.send(JSON.stringify({
-      datetime,
-      username,
-      id,
-      message,
-      color: user.color,
-    }));
-  });
+  if (statusMessage === "connect") {
+    connectionPool.getAllConnections().forEach((user) => {
+      user.broadcast("connected to chat");
+    });
+  } else if (statusMessage === "disconnect") {
+    connectionPool.getAllConnections().forEach((user) => {
+      user.broadcast("left the chat");
+    });
+  } else {
+    connectionPool.getAllConnections().forEach((user) => {
+      user.broadcast(message);
+    });
+  }
 }
 
 async function handle(conn: Deno.Conn) {
