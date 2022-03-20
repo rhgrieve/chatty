@@ -2,6 +2,16 @@ import { getRandomColor } from "./helpers.ts";
 
 const server = Deno.listen({ hostname: "0.0.0.0", port: 8080 });
 
+interface MessageData {
+  id: string;
+  message: string;
+  username: string;
+  datetime: string;
+  color: string;
+  statusMessage?: string;
+  isSystem?: boolean;
+}
+
 class ChatUser {
   uuid: string;
   username: string;
@@ -14,23 +24,30 @@ class ChatUser {
     this.conn = conn;
     this.color = getRandomColor();
   }
-
-  broadcast(message: string) {
-    this.conn.readyState === 1 && this.conn.send(JSON.stringify({
-      message,
-      datetime: new Date().toLocaleTimeString(),
-      id: this.uuid,
-      username: this.username,
-      color: this.color,
-    }));
-  }
 }
-
 class ConnPool {
   connections: { [key: string]: ChatUser };
 
   constructor() {
     this.connections = {};
+  }
+
+  broadcast(message: string, sendingUser: ChatUser, isSystem?: boolean) {
+    const deliveryUsers = isSystem
+      ? this.getAllConnections().filter((user) =>
+        user.uuid !== sendingUser.uuid
+      )
+      : this.getAllConnections();
+    deliveryUsers.forEach((user) => {
+      user.conn.readyState === 1 && user.conn.send(JSON.stringify({
+        message,
+        datetime: new Date().toLocaleTimeString(),
+        id: sendingUser.uuid,
+        username: sendingUser.username,
+        color: sendingUser.color,
+        isSystem,
+      }));
+    });
   }
 
   getConnectionByID(id: string): ChatUser | null {
@@ -51,31 +68,50 @@ class ConnPool {
   getAllConnections() {
     return Object.keys(this.connections).map((key) => this.connections[key]);
   }
+
+  removeUserFromPool(user: ChatUser) {
+    delete this.connections[user.uuid];
+  }
+
+  getFirstDeadConnection() {
+    const firstInactive =
+      this.getAllConnections().filter((user) =>
+        user.conn.readyState === WebSocket.CLOSED
+      )[0];
+    this.removeUserFromPool(firstInactive);
+    return firstInactive;
+  }
+
+  sendToUser(user: ChatUser, message: string) {
+    connectionPool.getConnectionByID(user.uuid)?.conn.send(JSON.stringify({
+      message,
+      datetime: new Date().toLocaleTimeString(),
+      isSystem: true,
+    }));
+  }
 }
 
 const connectionPool = new ConnPool();
 
-function broadcastMessage(
-  user: ChatUser,
-  datetime: string,
-  username: string,
-  id: string,
-  message: string,
-  color: string,
-) {
-  user.conn.readyState === 1 && user.conn.send(JSON.stringify({
-    datetime,
-    username,
-    id,
-    message,
-    color,
-  }));
+function parseCommand(command: string): string {
+  switch (command) {
+    case "help":
+      return "Available commands: `help`, `active`";
+    case "active":
+      return `(${connectionPool.getActiveCount()}) ` +
+        connectionPool.getAllConnections().map((user) => user.username)
+          .join(", ");
+    default:
+      return `Command not found: ${command}`;
+  }
 }
 
 function onMessage(this: WebSocket, e: MessageEvent<any>): any {
   console.log("socket message:", e.data);
 
-  const { id, message, username, statusMessage } = JSON.parse(e.data);
+  const { id, message, username, statusMessage } = <MessageData> JSON.parse(
+    e.data,
+  );
   let sendingUser = connectionPool.getConnectionByID(id);
   if (!sendingUser) {
     sendingUser = connectionPool.addConnection(
@@ -83,18 +119,29 @@ function onMessage(this: WebSocket, e: MessageEvent<any>): any {
     );
   }
 
-  if (statusMessage === "connect") {
-    connectionPool.getAllConnections().forEach((user) => {
-      user.broadcast("connected to chat");
-    });
-  } else if (statusMessage === "disconnect") {
-    connectionPool.getAllConnections().forEach((user) => {
-      user.broadcast("left the chat");
-    });
-  } else {
-    connectionPool.getAllConnections().forEach((user) => {
-      user.broadcast(message);
-    });
+  if (message.startsWith(">")) {
+    const command = message.substring(1);
+    connectionPool.sendToUser(sendingUser, parseCommand(command));
+    return;
+  }
+
+  switch (statusMessage) {
+    case "connect":
+      connectionPool.broadcast(
+        `:wave: ${sendingUser.username} has entered the chat`,
+        sendingUser,
+        true,
+      );
+      break;
+    case "disconnect":
+      connectionPool.broadcast(
+        `:v: ${sendingUser.username} has left the chat`,
+        sendingUser,
+        true,
+      );
+      break;
+    default:
+      connectionPool.broadcast(message, sendingUser);
   }
 }
 
@@ -119,7 +166,16 @@ function handleReq(req: Request): Response {
 
   socket.onerror = (e) =>
     console.log("socket error:", (<ErrorEvent> e).message);
-  socket.onclose = () => console.log("socket closed");
+
+  socket.onclose = () => {
+    console.log("socket closed");
+    const userLeft = connectionPool.getFirstDeadConnection();
+    connectionPool.broadcast(
+      `:v: ${userLeft.username} has left the chat`,
+      userLeft,
+      true,
+    );
+  };
   return response;
 }
 
