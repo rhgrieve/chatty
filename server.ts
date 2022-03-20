@@ -1,6 +1,22 @@
 import { getRandomColor } from "./helpers.ts";
 
-const server = Deno.listen({ hostname: "0.0.0.0", port: 8080 });
+const { args } = Deno;
+
+function parseArgs(args: string[]) {
+  const argMap: { [key: string]: string } = {};
+  args.forEach((arg) => {
+    const argList = arg.replaceAll("-", "").split("=");
+    argMap[argList[0]] = argList[1];
+  });
+  return argMap;
+}
+
+const argPort = parseArgs(args).port;
+const DEFAULT_PORT = 8000;
+const server = Deno.listen({
+  hostname: "0.0.0.0",
+  port: argPort ? parseInt(argPort) : DEFAULT_PORT,
+});
 
 interface MessageData {
   id: string;
